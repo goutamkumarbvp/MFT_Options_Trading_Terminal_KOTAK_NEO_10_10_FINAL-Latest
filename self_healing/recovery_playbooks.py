@@ -23,13 +23,17 @@ class RecoveryPlaybooks:
         if name in self._hooks:
             return self._hooks[name](*args, **kwargs)
         self.logger.warning(f"Hook not registered: {name}")
-        return True # Return true for simulation/testing if not registered
+        return False # Honestly fail if the integration hook is missing
 
     def recover_network(self) -> bool:
         """Network recovery playbook."""
         self.logger.info("Executing NETWORK recovery playbook: waiting and retrying...")
         time.sleep(2) # Backoff
-        return self._execute_hook("verify_network")
+
+        success = self._execute_hook("verify_network")
+        if not success:
+             self.logger.error("NETWORK recovery verification failed.")
+        return success
 
     def recover_websocket(self) -> bool:
         """WebSocket recovery playbook."""
@@ -41,10 +45,23 @@ class RecoveryPlaybooks:
         active_subs = self.state_manager.get_state("active_subscriptions")
 
         success = self._execute_hook("create_clean_connection")
-        if success and active_subs:
-            success = self._execute_hook("resubscribe", active_subs)
+        if not success:
+             self.logger.error("WEBSOCKET recovery failed: Could not create clean connection.")
+             return False
 
-        return success
+        if active_subs:
+            success = self._execute_hook("resubscribe", active_subs)
+            if not success:
+                 self.logger.error("WEBSOCKET recovery failed: Could not restore active subscriptions.")
+                 return False
+
+        # Explicitly verify the connection is truly healthy (live heartbeat parsing)
+        verified = self._execute_hook("verify_websocket_health")
+        if not verified:
+             self.logger.error("WEBSOCKET recovery verification failed: No fresh heartbeat detected after reconnect.")
+             return False
+
+        return True
 
     def recover_broker_session(self) -> bool:
         """Broker authentication recovery playbook."""

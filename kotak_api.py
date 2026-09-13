@@ -27,6 +27,42 @@ class KotakNeoClient:
         self.supervisor.register_recovery_hook("close_stale_socket", self.close_stale_socket)
         self.supervisor.register_recovery_hook("create_clean_connection", self.create_clean_connection)
         self.supervisor.register_recovery_hook("resubscribe", self.resubscribe)
+        self.supervisor.register_recovery_hook("verify_network", self.verify_network)
+        self.supervisor.register_recovery_hook("verify_websocket_health", self.verify_websocket_health)
+
+    def verify_network(self) -> bool:
+        logger.info("[Kotak API] Verifying network connectivity to broker REST endpoint...")
+        try:
+            import urllib.request
+            req = urllib.request.Request(self.api_url, method="HEAD")
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                return response.status in [200, 301, 302, 401, 403] # Responding at all implies network is up
+        except Exception as e:
+            logger.error(f"[Kotak API] Network verification failed.")
+            return False
+
+    def verify_websocket_health(self) -> bool:
+        logger.info("[Kotak WS] Verifying post-reconnect WebSocket health (waiting for live tick)...")
+        # Ensure the thread is actually alive
+        if not self._ws_thread or not self._ws_thread.is_alive():
+            return False
+
+        # Poll up to 5 seconds to ensure a fresh heartbeat arrived AFTER we reconnected
+        check_start_time = time.time()
+        timeout = 5.0
+
+        while (time.time() - check_start_time) < timeout:
+            health = self.supervisor.health_monitor.get_health(Subsystem.WEBSOCKET)
+
+            # If we received a heartbeat timestamp that is newer than when we started verifying
+            if health.last_heartbeat and health.last_heartbeat.timestamp() >= check_start_time:
+                logger.info("[Kotak WS] WebSocket health verified successfully.")
+                return True
+
+            time.sleep(0.5)
+
+        logger.error("[Kotak WS] WebSocket health verification timed out. No live ticks received.")
+        return False
 
     def refresh_session(self) -> bool:
         logger.info("[Kotak API] Refreshing authentication session...")

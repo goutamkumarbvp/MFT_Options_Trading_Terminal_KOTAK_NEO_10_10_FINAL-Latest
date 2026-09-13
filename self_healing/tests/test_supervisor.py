@@ -170,6 +170,54 @@ class TestSelfHealingEngine(unittest.TestCase):
         self.supervisor.register_recovery_hook("refetch_data", self.market_data.refetch_data)
         self.supervisor.register_recovery_hook("invalidate_stale_state", self.market_data.invalidate_stale_state)
 
+    def test_missing_verification_hook_fails(self):
+        """A & B: Missing verification hook or failed verification prevents SUCCESS and HEALTHY state."""
+        # Unregister the verify_network hook to simulate a missing required hook
+        original_hook = self.supervisor.recovery_manager.playbooks._hooks.get("verify_network")
+        if "verify_network" in self.supervisor.recovery_manager.playbooks._hooks:
+            del self.supervisor.recovery_manager.playbooks._hooks["verify_network"]
+
+        action = self.supervisor.report_failure(
+            Subsystem.MARKET_DATA,
+            None,
+            "Watchdog heartbeat timeout"
+        )
+        self.assertEqual(action.result, "DISPATCHED")
+        time.sleep(3.0) # Wait out the backoff (2s)
+
+        # Because verify_network hook is missing, the playbook honestly fails and returns False
+        # Meaning the state remains FAILED (or DEGRADED) and does not incorrectly transition to HEALTHY
+        health = self.supervisor.health_monitor.get_health(Subsystem.MARKET_DATA)
+        self.assertEqual(health.state, HealthState.FAILED)
+
+        if original_hook:
+            self.supervisor.register_recovery_hook("verify_network", original_hook)
+
+    def test_websocket_strict_post_recovery_verification(self):
+        """C, E & F: Genuine successful recovery requires fresh heartbeat and verified subscriptions."""
+
+        # We simulate a WS failure
+        action = self.supervisor.report_failure(
+            Subsystem.WEBSOCKET,
+            Exception("WebSocket connection closed with code 1006"),
+            "Connection dropped"
+        )
+        self.assertEqual(action.result, "DISPATCHED")
+
+        # We manually pulse a fresh heartbeat immediately so the verification hook (which waits up to 5s)
+        # succeeds and allows the playbook to return True, transitioning the state to HEALTHY.
+        def async_pulse():
+             time.sleep(0.5)
+             self.supervisor.report_heartbeat(Subsystem.WEBSOCKET)
+        import threading
+        threading.Thread(target=async_pulse, daemon=True).start()
+
+        # Wait for the async recovery logic and verification polling to complete
+        time.sleep(2.5) # Wait out connection attempt + polling logic
+
+        health = self.supervisor.health_monitor.get_health(Subsystem.WEBSOCKET)
+        self.assertEqual(health.state, HealthState.HEALTHY)
+
     def test_failed_recovery_rollback(self):
         """Scenario 20: Rollback after failed recovery."""
 
