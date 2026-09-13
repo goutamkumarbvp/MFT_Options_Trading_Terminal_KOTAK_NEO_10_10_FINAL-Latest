@@ -19,7 +19,13 @@ class TestSelfHealingEngine(unittest.TestCase):
                 return True
             return hook
 
-        for action in ["close_stale_socket", "create_clean_connection", "resubscribe", "invalidate_stale_state", "refetch_data", "isolate_bad_input", "recalculate_from_clean_state"]:
+        for action in [
+            "close_stale_socket", "create_clean_connection", "resubscribe",
+            "invalidate_stale_state", "refetch_data", "isolate_bad_input",
+            "recalculate_from_clean_state", "cancel_duplicate_timers",
+            "unsubscribe_duplicates", "restart_worker", "reconnect_frontend_channel",
+            "verify_network", "refresh_session"
+        ]:
             self.supervisor.register_recovery_hook(action, make_hook(action))
 
     def tearDown(self):
@@ -100,20 +106,92 @@ class TestSelfHealingEngine(unittest.TestCase):
 
     def test_watchdog_timeout(self):
         """Test that watchdog detects missing heartbeats."""
-        # Set a very low threshold for testing
         self.supervisor.watchdog.set_threshold(Subsystem.MARKET_DATA, timedelta(seconds=0.1))
-
-        # Report initial heartbeat
         self.supervisor.report_heartbeat(Subsystem.MARKET_DATA)
 
-        # Wait for timeout
         time.sleep(0.5)
 
-        # Verify the watchdog caught it and updated the state to failed (or recovering if it auto-triggers)
         health = self.supervisor.health_monitor.get_health(Subsystem.MARKET_DATA)
-        # In a real system, the watchdog callback triggers report_failure, which sets it to RECOVERING then HEALTHY (if mocked success)
-        # So we just verify it didn't stay at the old timestamp/healthy state without intervention.
         self.assertTrue(health.retry_count >= 0)
+
+    def test_worker_crash(self):
+        """Scenario 13: Worker crash recovery."""
+        action = self.supervisor.report_failure(
+            Subsystem.BACKGROUND_WORKER,
+            Exception("Worker task failed unexpectedly"),
+            "Worker crash detected"
+        )
+        self.assertEqual(action.action_name, "generic_level_1") # Should trigger progressive retry
+        self.assertEqual(action.result, "SUCCESS")
+
+    def test_duplicate_timer_and_subscription(self):
+        """Scenario 15 & 16: Duplicate Timer / Subscription."""
+
+        # Test Duplicate Timer
+        action = self.supervisor.report_failure(
+            Subsystem.STATE,
+            None,
+            "duplicate timer detected for open interest build up"
+        )
+        self.assertEqual(action.action_name, "duplicate_timer_recovery")
+        self.assertIn("cancel_duplicate_timers", self.hooks_called)
+
+        # Test Duplicate Subscription
+        action_sub = self.supervisor.report_failure(
+            Subsystem.STATE,
+            None,
+            "Duplicate subscription found for instrument 1234"
+        )
+        self.assertEqual(action_sub.action_name, "duplicate_subscription_recovery")
+        self.assertIn("unsubscribe_duplicates", self.hooks_called)
+
+    def test_frontend_channel_failure(self):
+        """Scenario 17: Frontend/Backend channel failure."""
+        action = self.supervisor.report_failure(
+            Subsystem.FRONTEND_BACKEND,
+            Exception("WebSocket disconnect"),
+            "Frontend channel dropped"
+        )
+        self.assertEqual(action.action_name, "frontend_recovery")
+        self.assertIn("reconnect_frontend_channel", self.hooks_called)
+
+    def test_malformed_option_chain_data(self):
+        """Scenario 9 & 10: Malformed option chain data."""
+        action = self.supervisor.report_failure(
+            Subsystem.OPTION_CHAIN,
+            ValueError("Malformed JSON"),
+            "Malformed data received from API"
+        )
+
+        # Fall into DATA recovery playbook
+        self.assertEqual(action.action_name, "data_recovery")
+        self.assertIn("invalidate_stale_state", self.hooks_called)
+
+    def test_failed_recovery_rollback(self):
+        """Scenario 20: Rollback after failed recovery."""
+        # Unregister the hook to simulate a failed recovery action
+        del self.supervisor.recovery_manager.playbooks._hooks["refetch_data"]
+
+        # Override the hook to deliberately raise an exception to simulate failure
+        def failing_hook(*args, **kwargs):
+            raise Exception("Simulated fatal failure during recovery")
+
+        self.supervisor.register_recovery_hook("refetch_data", failing_hook)
+
+        # Set some state to test rollback
+        self.supervisor.state_manager.update_state("selected_strike", 19500)
+
+        # Simulate data failure, which will call refetch_data, which will fail
+        action = self.supervisor.report_failure(
+            Subsystem.OPTION_CHAIN,
+            None,
+            "Stale data"
+        )
+
+        self.assertEqual(action.result, "FAILED")
+
+        # Verify rollback preserved state (the pre-recovery checkpoint had selected_strike = 19500)
+        self.assertEqual(self.supervisor.state_manager.get_state("selected_strike"), 19500)
 
 if __name__ == '__main__':
     unittest.main()
