@@ -52,16 +52,15 @@ class KotakNeoClient:
                     if response.status == 200:
                         data = json.loads(response.read().decode())
                         self.session_token = data.get("token")
+                        logger.info("[Kotak API] Session refreshed successfully.")
+                        return True
+                    else:
+                        raise ValueError(f"Unexpected status: {response.status}")
             except (urllib.error.URLError, ValueError) as e:
-                # If network is unavailable or URL is invalid during testing, we rely on the dynamic token
-                # logic strictly to allow tests to pass without hardcoded mock "sleep" functions blocking.
-                if not env_token:
-                     self.session_token = "dynamic_session_token_from_fallback"
-                else:
-                     raise e
+                # We honestly fail if the broker is unreachable or configuration is missing
+                logger.error(f"[Kotak API] Failed to refresh session: Broker unavailable or misconfigured.")
+                return False
 
-            logger.info("[Kotak API] Session refreshed successfully.")
-            return True
         except Exception as e:
             logger.error(f"[Kotak API] Failed to refresh session.") # Never log exception specifics containing tokens
             return False
@@ -126,13 +125,21 @@ class KotakNeoClient:
 
         while self._running and not stop_event.is_set():
             try:
-                # Wait for data (in real code, this is ws.recv())
+                # In production, this would be a blocking read from the socket (e.g., ws.recv())
+                # For structural purposes, we simulate the wait, but we ONLY report a heartbeat if we
+                # actually parsed real data.
                 stop_event.wait(0.5)
                 if stop_event.is_set() or not self._running:
                     break
 
-                # Report heartbeat to supervisor to indicate healthy data flow
-                self.supervisor.report_heartbeat(Subsystem.WEBSOCKET)
+                # Simulated payload representing what we might get from ws.recv()
+                # In this environment without Kotak credentials, the payload is essentially "None"
+                # so we skip reporting a heartbeat to honestly depict that we are not receiving live data.
+                raw_payload = None
+
+                if raw_payload:
+                    # In a real environment, we'd parse the JSON here
+                    self.supervisor.report_heartbeat(Subsystem.WEBSOCKET)
 
             except Exception as e:
                 # Catch any unexpected WS errors and report them

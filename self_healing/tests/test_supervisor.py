@@ -173,6 +173,13 @@ class TestSelfHealingEngine(unittest.TestCase):
     def test_failed_recovery_rollback(self):
         """Scenario 20: Rollback after failed recovery."""
 
+        # The true unmocked startup sequence will fire off a pre-fetch failure due to lacking credentials.
+        # This will rollback the initial empty state (None) over our artificially injected (19500) state
+        # if we do not isolate the test cleanly.
+        # We will stop the background workers first.
+        self.workers.stop()
+        time.sleep(0.1)
+
         # Override the live hook temporarily to deliberately raise an exception to simulate failure
         def failing_hook(*args, **kwargs):
             raise Exception("Simulated fatal failure during recovery")
