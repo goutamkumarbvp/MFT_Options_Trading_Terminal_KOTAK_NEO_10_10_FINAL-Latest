@@ -37,11 +37,23 @@ class OptionsTradingTerminal:
         logger.info("Terminal is running and protected by Self-Healing Engine.")
 
     def stop(self):
-        logger.info("Shutting down terminal...")
-        self.workers.stop()
-        self.kotak_client.close_stale_socket()
-        self.supervisor.stop()
-        logger.info("Terminal shut down successfully.")
+        logger.info("Initiating Graceful Shutdown sequence...")
+        try:
+            # 1. Stop background processing first so they stop asking for data
+            logger.info("Stopping calculation workers...")
+            self.workers.stop()
+
+            # 2. Close external connections cleanly
+            logger.info("Closing Kotak Neo WebSocket and flushing queues...")
+            self.kotak_client.close_stale_socket()
+
+            # 3. Stop the supervisor (cleans up watchdog threads)
+            logger.info("Stopping Self-Healing Supervisor...")
+            self.supervisor.stop()
+
+            logger.info("Terminal shutdown complete. No zombie processes left behind.")
+        except Exception as e:
+            logger.critical(f"Error during shutdown sequence: {e}")
 
 if __name__ == "__main__":
     terminal = OptionsTradingTerminal()

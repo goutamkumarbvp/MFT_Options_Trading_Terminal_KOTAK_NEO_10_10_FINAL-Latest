@@ -136,6 +136,9 @@ class TestSelfHealingEngine(unittest.TestCase):
         self.assertEqual(action.action_name, "duplicate_timer_recovery")
         self.assertIn("cancel_duplicate_timers", self.hooks_called)
 
+        # Assert that the recovery was successful without infinite loops
+        self.assertEqual(action.result, "SUCCESS")
+
         # Test Duplicate Subscription
         action_sub = self.supervisor.report_failure(
             Subsystem.STATE,

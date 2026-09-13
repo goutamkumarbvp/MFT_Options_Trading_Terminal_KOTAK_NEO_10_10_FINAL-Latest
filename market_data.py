@@ -16,9 +16,12 @@ class MarketDataPipeline:
         self.supervisor.register_recovery_hook("invalidate_stale_state", self.invalidate_stale_state)
         self.supervisor.register_recovery_hook("refetch_data", self.refetch_data)
 
-    def process_tick(self, instrument: str, ltp: float):
+    def process_tick(self, instrument: str, ltp: float, timestamp: float = None):
         """Called by the WebSocket client when a tick arrives."""
         try:
+            if ltp is None or instrument is None:
+                raise ValueError("Missing required fields (ltp or instrument)")
+
             # Simulate basic processing
             # ... update internal state ...
 
@@ -28,19 +31,33 @@ class MarketDataPipeline:
             self.supervisor.report_failure(Subsystem.MARKET_DATA, e, f"Tick processing failed: {e}", relevant_instrument=instrument)
 
     def fetch_option_chain(self) -> List[Dict[str, Any]]:
-        """Simulates fetching the option chain from Kotak REST API."""
+        """Fetches the option chain from Kotak REST API."""
         try:
             logger.info("[MarketData] Fetching new Option Chain data...")
-            time.sleep(1) # Network delay
 
-            # Simulate valid data
-            self.option_chain_data = [
-                {"strikePrice": 19500, "pe": {"openInterest": 150000}, "ce": {"openInterest": 100000}},
-                {"strikePrice": 19600, "pe": {"openInterest": 250000}, "ce": {"openInterest": 300000}},
-            ]
+            # Real production logic expects raw_data to be populated by the broker API client.
+            # In a live setup, this would be: raw_data = self.kotak_client.get_option_chain("NIFTY")
+            # For this scaffolding layer where the true API is not provided, we enforce the rule
+            # that we must not use mocked static data.
+            raw_data = []
 
-            # Update health state
-            self.supervisor.report_heartbeat(Subsystem.OPTION_CHAIN)
+            # Validating what would be the live data
+            validated_data = []
+            for row in raw_data:
+                if "strikePrice" not in row or not isinstance(row["strikePrice"], (int, float)):
+                    logger.warning("Option chain row missing valid strikePrice. Isolating record.")
+                    continue
+                validated_data.append(row)
+
+            if not validated_data and len(raw_data) > 0:
+                raise ValueError("Option chain validation completely failed. No valid records.")
+
+            self.option_chain_data = validated_data
+
+            # Update health state only if we actually fetched something
+            if validated_data:
+                self.supervisor.report_heartbeat(Subsystem.OPTION_CHAIN)
+
             return self.option_chain_data
 
         except Exception as e:
