@@ -59,7 +59,12 @@ class Watchdog:
 
             if health.last_heartbeat:
                 time_since_heartbeat = now - health.last_heartbeat
-                if time_since_heartbeat > threshold and health.state == HealthState.HEALTHY:
+                if time_since_heartbeat > threshold and health.state in [HealthState.HEALTHY, HealthState.FAILED]:
+                    # Throttle FAILED components so they only retry periodically rather than every second
+                    if health.state == HealthState.FAILED:
+                        if health.last_retry_time and (now - health.last_retry_time) < (threshold * 2):
+                            continue # Cooldown period
+
                     self.logger.warning(
                         f"Heartbeat timeout for {subsystem.name}. Last heartbeat was {time_since_heartbeat.total_seconds():.1f}s ago.",
                         extra={"subsystem": subsystem.name, "problem": "Heartbeat timeout"}

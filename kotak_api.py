@@ -72,14 +72,19 @@ class KotakNeoClient:
             self.ws_connected = False
             self._running = False
 
-        if self._ws_thread and self._ws_thread.is_alive():
+        # Do not attempt to join the thread if we are currently executing INSIDE that thread
+        # Otherwise it causes RuntimeError: cannot join current thread
+        if self._ws_thread and self._ws_thread.is_alive() and threading.current_thread() != self._ws_thread:
             self._ws_thread.join(timeout=2.0)
+
         return True
 
     def create_clean_connection(self) -> bool:
         logger.info("[Kotak WS] Establishing new clean WebSocket connection...")
         with self._connection_lock:
-            if self.ws_connected or (self._ws_thread and self._ws_thread.is_alive()):
+            # Again, do not block connection establishment if the caller is the expiring thread itself
+            is_self = self._ws_thread == threading.current_thread()
+            if self.ws_connected or (not is_self and self._ws_thread and self._ws_thread.is_alive()):
                 logger.warning("[Kotak WS] Connection already active or threading conflict. Deduplicating.")
                 return False
 

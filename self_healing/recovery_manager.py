@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Dict, Any, Optional
+import threading
 from .enums import FailureCategory, Subsystem, HealthState, RecoveryLevel
 from .models import DiagnosticLog, RecoveryAction, HealthSignal
 from .health_monitor import HealthMonitor
@@ -44,8 +45,26 @@ class RecoveryManager:
         health = self.health_monitor.get_health(subsystem)
         level = self._determine_escalation_level(health.retry_count)
 
-        self.logger.info(f"Attempting {level.name} recovery for {subsystem.name}")
+        self.logger.info(f"Attempting {level.name} recovery for {subsystem.name} in background thread")
 
+        # Fire off recovery in a background thread to prevent deadlocking the caller
+        # (e.g. so a WebSocket thread isn't trying to .join() itself during self-recovery)
+        threading.Thread(
+            target=self._execute_recovery_async,
+            args=(subsystem, category, level, diagnostic_log),
+            daemon=True,
+            name=f"RecoveryManager_{subsystem.name}"
+        ).start()
+
+        return RecoveryAction(
+            subsystem=subsystem,
+            level=level,
+            action_name="dispatched_async",
+            result="DISPATCHED"
+        )
+
+    def _execute_recovery_async(self, subsystem: Subsystem, category: FailureCategory, level: RecoveryLevel, diagnostic_log: DiagnosticLog):
+        """Executes the recovery logic asynchronously."""
         success = False
         action_name = "unknown"
 
@@ -119,13 +138,6 @@ class RecoveryManager:
                 state=HealthState.FAILED,
                 details={"reason": "Recovery failed"}
             ))
-
-        return RecoveryAction(
-            subsystem=subsystem,
-            level=level,
-            action_name=action_name,
-            result=result_str
-        )
 
     def _determine_escalation_level(self, retry_count: int) -> RecoveryLevel:
         """Progressive escalation logic."""
