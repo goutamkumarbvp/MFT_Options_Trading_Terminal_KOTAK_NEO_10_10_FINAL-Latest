@@ -1,0 +1,2 @@
+# No external pip dependencies are strictly required for the core Python 3 standard library architecture
+# If future UI or websocket-client libraries are attached, list them here.
